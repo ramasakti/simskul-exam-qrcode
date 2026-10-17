@@ -43,8 +43,7 @@ function isValidUrl(string) {
 }
 
 // ============================================================
-// Helper: Parse timestamp (Unix seconds / ms / ISO string)
-//   -> Date valid, atau null kalau invalid
+// Helper: Parse timestamp
 // ============================================================
 function parseTimestamp(value) {
     if (value === null || value === undefined) return null;
@@ -72,22 +71,37 @@ function parseTimestamp(value) {
 }
 
 // ============================================================
-// Helper: Update link yang sudah ada
+// Helper: Generate kode_acak unik
 // ============================================================
-async function updateExistingLink(existing, { token, start, end, startDate, endDate }) {
-    const updates = {
-        token: token ?? null,
-        updated_at: db.fn.now(),
-    };
-    if (start !== undefined) updates.start = startDate;
-    if (end !== undefined) updates.end = endDate;
+async function generateUniqueKodeAcak() {
+    for (let i = 0; i < 20; i++) {
+        const code = generateRandomCode(6);
+        const found = await db('links').where({ kode_acak: code }).first();
+        if (!found) return code;
+    }
+    throw new Error('Gagal menghasilkan kode_acak unik setelah 20 percobaan.');
+}
 
-    await db('links').where({ id: existing.id }).update(updates);
-
-    return db('links')
-        .where({ id: existing.id })
-        .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'created_at', 'updated_at')
-        .first();
+// ============================================================
+// Helper: Insert baru dengan retry saat race condition
+// ============================================================
+async function insertNewLink(data) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            const [insertedId] = await db('links').insert(data);
+            return await db('links')
+                .where({ id: insertedId })
+                .first();
+        } catch (err) {
+            if (err.code === 'ER_DUP_ENTRY' && attempt === 0) {
+                // Request lain baru saja insert URL yang sama -> hapus & retry
+                await db('links').where({ url_hash: data.url_hash }).delete();
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error('Gagal insert link setelah retry.');
 }
 
 // ============================================================
@@ -95,7 +109,7 @@ async function updateExistingLink(existing, { token, start, end, startDate, endD
 // ============================================================
 app.post('/generate', async (req, res) => {
     try {
-        const { url, token, start, end } = req.body;
+        const { url, token, start, end, min_logout } = req.body;
 
         // ---- Validasi dasar ----
         if (!url) {
@@ -119,13 +133,18 @@ app.post('/generate', async (req, res) => {
             });
         }
 
-        // ---- Parse & validasi start/end ----
-        let startDate;
-        if (start === undefined) {
-            startDate = undefined;
-        } else if (start === null) {
-            startDate = null;
-        } else {
+        if (min_logout !== undefined && min_logout !== null) {
+            if (typeof min_logout !== 'number' || !Number.isInteger(min_logout) || min_logout < 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Field "min_logout" harus berupa angka bulat (menit) >= 0.',
+                });
+            }
+        }
+
+        // ---- Parse start/end ----
+        let startDate = null;
+        if (start !== undefined && start !== null) {
             startDate = parseTimestamp(start);
             if (startDate === null) {
                 return res.status(400).json({
@@ -135,12 +154,8 @@ app.post('/generate', async (req, res) => {
             }
         }
 
-        let endDate;
-        if (end === undefined) {
-            endDate = undefined;
-        } else if (end === null) {
-            endDate = null;
-        } else {
+        let endDate = null;
+        if (end !== undefined && end !== null) {
             endDate = parseTimestamp(end);
             if (endDate === null) {
                 return res.status(400).json({
@@ -150,18 +165,11 @@ app.post('/generate', async (req, res) => {
             }
         }
 
-        // ---- Cek apakah URL sudah ada ----
-        const urlHash = hashUrl(url);
-        const existing = await db('links').where({ url_hash: urlHash }).first();
-
-        // Tentukan nilai start/end final (request atau existing)
-        const finalStart = start !== undefined ? startDate : (existing ? existing.start : null);
-        const finalEnd = end !== undefined ? endDate : (existing ? existing.end : null);
-
-        if (finalStart && finalEnd) {
-            const s = new Date(finalStart).getTime();
-            const e = new Date(finalEnd).getTime();
-            if (Number.isFinite(s) && Number.isFinite(e) && e <= s) {
+        // ---- Validasi end > start ----
+        if (startDate && endDate) {
+            const s = startDate.getTime();
+            const e = endDate.getTime();
+            if (e <= s) {
                 return res.status(400).json({
                     success: false,
                     message: 'Field "end" tidak boleh lebih kecil atau sama dengan "start".',
@@ -169,68 +177,45 @@ app.post('/generate', async (req, res) => {
             }
         }
 
-        // ---- Kalau sudah ada -> update ----
+        // ---- Validasi: min_logout wajib punya end ----
+        if (min_logout !== undefined && min_logout !== null && !endDate) {
+            return res.status(400).json({
+                success: false,
+                message: 'Field "end" wajib diisi jika "min_logout" diisi.',
+            });
+        }
+
+        // ---- Cek URL existing -> HAPUS data lama ----
+        const urlHash = hashUrl(url);
+        const existing = await db('links').where({ url_hash: urlHash }).first();
+
         if (existing) {
-            const updated = await updateExistingLink(existing, {
-                token, start, end, startDate, endDate,
-            });
-
-            return res.status(200).json({
-                success: true,
-                message: 'Link berhasil diperbarui.',
-                data: updated,
-            });
+            await db('links').where({ id: existing.id }).delete();
         }
 
-        // ---- Generate kode acak unik ----
-        let kode_acak;
-        let isUnique = false;
+        // ---- Generate kode_acak unik & insert ----
+        const kode_acak = await generateUniqueKodeAcak();
 
-        while (!isUnique) {
-            kode_acak = generateRandomCode(6);
-            const found = await db('links').where({ kode_acak }).first();
-            if (!found) isUnique = true;
-        }
+        const saved = await insertNewLink({
+            url,
+            url_hash: urlHash,
+            token: token ?? null,
+            kode_acak,
+            start: startDate ?? null,
+            end: endDate ?? null,
+            min_logout: min_logout ?? null,
+        });
 
-        // ---- Simpan ke database ----
-        try {
-            const [insertedId] = await db('links').insert({
-                url,
-                url_hash: urlHash,
-                token: token ?? null,
-                kode_acak,
-                start: startDate ?? null,
-                end: endDate ?? null,
-            });
+        const replaced = Boolean(existing);
 
-            const saved = await db('links')
-                .where({ id: insertedId })
-                .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'created_at', 'updated_at')
-                .first();
-
-            return res.status(201).json({
-                success: true,
-                message: 'Link berhasil dibuat.',
-                data: saved,
-            });
-        } catch (dbError) {
-            // Handle race condition: baris sudah diinsert duluan -> update
-            if (dbError.code === 'ER_DUP_ENTRY') {
-                const dup = await db('links').where({ url_hash: urlHash }).first();
-                if (dup) {
-                    const updated = await updateExistingLink(dup, {
-                        token, start, end, startDate, endDate,
-                    });
-
-                    return res.status(200).json({
-                        success: true,
-                        message: 'Link berhasil diperbarui.',
-                        data: updated,
-                    });
-                }
-            }
-            throw dbError;
-        }
+        return res.status(replaced ? 200 : 201).json({
+            success: true,
+            message: replaced
+                ? 'Link berhasil dibuat ulang. Data lama dihapus, kode_acak baru diterbitkan.'
+                : 'Link berhasil dibuat.',
+            replaced,
+            data: saved,
+        });
     } catch (error) {
         console.error('[/generate] Error:', error);
         return res.status(500).json({
@@ -250,7 +235,7 @@ app.get('/url/:url_hash', async (req, res) => {
 
         const link = await db('links')
             .where({ url_hash })
-            .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'created_at', 'updated_at')
+            .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'min_logout', 'created_at', 'updated_at')
             .first();
 
         if (!link) {
@@ -260,7 +245,16 @@ app.get('/url/:url_hash', async (req, res) => {
             });
         }
 
-        // ---- Cek masa berlaku ujian ----
+        if (link.start) {
+            const startMs = new Date(link.end).getTime();
+            if (Number.isFinite(startMs) && Date.now() > startMs) {
+                return res.status(410).json({
+                    success: false,
+                    message: 'Ujian belum dimulai.',
+                });
+            }
+        }
+
         if (link.end) {
             const endMs = new Date(link.end).getTime();
             if (Number.isFinite(endMs) && Date.now() > endMs) {
@@ -271,12 +265,71 @@ app.get('/url/:url_hash', async (req, res) => {
             }
         }
 
+        return res.status(200).json({ success: true, data: link });
+    } catch (error) {
+        console.error('[/url/:url_hash] Error:', error);
+        return res.status(500).json({
+            success: false,
+            message: 'Terjadi kesalahan pada server.',
+            error: error.message,
+        });
+    }
+});
+
+// ============================================================
+// GET /logout/:url_hash
+// ============================================================
+app.get('/logout/:url_hash', async (req, res) => {
+    try {
+        const { url_hash } = req.params;
+
+        const link = await db('links')
+            .where({ url_hash })
+            .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'min_logout', 'created_at', 'updated_at')
+            .first();
+
+        if (!link) {
+            return res.status(404).json({
+                success: false,
+                message: `Link dengan kode "${url_hash}" tidak ditemukan.`,
+            });
+        }
+
+        if (link.min_logout === null || link.min_logout === undefined) {
+            return res.status(200).json({
+                success: true,
+                message: 'Logout valid.',
+                data: { valid: true, earliest_logout: null },
+            });
+        }
+
+        const referenceTime = link.start ? new Date(link.start) : new Date(link.created_at);
+        if (isNaN(referenceTime.getTime())) {
+            return res.status(500).json({
+                success: false,
+                message: 'Data waktu referensi tidak valid.',
+            });
+        }
+
+        const minLogoutMs = link.min_logout * 60 * 1000;
+        const earliestLogoutMs = referenceTime.getTime() + minLogoutMs;
+        const earliestLogoutIso = new Date(earliestLogoutMs).toISOString();
+
+        if (Date.now() < earliestLogoutMs) {
+            return res.status(403).json({
+                success: false,
+                message: `Belum waktunya logout. Minimal ${link.min_logout} menit sejak waktu mulai.`,
+                data: { valid: false, earliest_logout: earliestLogoutIso },
+            });
+        }
+
         return res.status(200).json({
             success: true,
-            data: link,
+            message: 'Logout valid.',
+            data: { valid: true, earliest_logout: earliestLogoutIso },
         });
     } catch (error) {
-        console.error('[/url/:kode_acak] Error:', error);
+        console.error('[/logout/:url_hash] Error:', error);
         return res.status(500).json({
             success: false,
             message: 'Terjadi kesalahan pada server.',

@@ -7,6 +7,7 @@ export function up(knex) {
         table.string('kode_acak', 255).notNullable().unique();
         table.timestamp('start').nullable();
         table.timestamp('end').nullable();
+        table.integer('min_logout').nullable();
         table.timestamps(true, true);
     });
 }
