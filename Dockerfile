@@ -7,9 +7,8 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
-RUN bun knex migrate:latest
-
+ENV NODE_ENV=production
 ENV PORT=3100
 EXPOSE 3100
 
-CMD ["bun", "index.js"]
+CMD ["sh", "entrypoint.sh"]
