@@ -7,4 +7,4 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
-CMD ["sh", "entrypoint.sh"]
+CMD ["bun", "index.js"]
