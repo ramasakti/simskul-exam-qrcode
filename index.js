@@ -1,4 +1,3 @@
-// index.js
 import 'dotenv/config';
 import express from 'express';
 import knex from 'knex';
@@ -350,10 +349,7 @@ app.get('/logout/:url_hash', async (req, res) => {
     }
 });
 
-// ============================================================
-// Jalankan server
-// ============================================================
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT;
 
 app.listen(PORT, () => {
     console.log(`🚀 Server berjalan di http://localhost:${PORT}`);

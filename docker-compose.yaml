@@ -1,0 +1,11 @@
+services:
+  app:
+    container_name: simskul_examqr
+    build: .
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-3200}:${PORT:-3200}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
