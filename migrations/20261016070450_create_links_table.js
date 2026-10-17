@@ -5,6 +5,8 @@ export function up(knex) {
         table.string('url_hash', 64).notNullable().unique();
         table.boolean('token').nullable().defaultTo(null);
         table.string('kode_acak', 255).notNullable().unique();
+        table.timestamp('start').nullable();
+        table.timestamp('end').nullable();
         table.timestamps(true, true);
     });
 }
