@@ -4,6 +4,7 @@ import express from 'express';
 import knex from 'knex';
 import crypto from 'node:crypto';
 import knexConfig from './knexfile.js';
+import moment from 'moment';
 
 const app = express();
 const db = knex(knexConfig.development);
@@ -199,7 +200,7 @@ app.post('/generate', async (req, res) => {
         const saved = await insertNewLink({
             url,
             url_hash: urlHash,
-            token: token ?? null,
+            token: Boolean(token),
             kode_acak,
             start: startDate ?? null,
             end: endDate ?? null,
@@ -214,7 +215,12 @@ app.post('/generate', async (req, res) => {
                 ? 'Link berhasil dibuat ulang. Data lama dihapus, kode_acak baru diterbitkan.'
                 : 'Link berhasil dibuat.',
             replaced,
-            data: saved,
+            data: {
+                ...saved,
+                token: saved.token === true || saved.token === 1 || saved.token === '1',
+                start: moment(saved.start).format('YYYY-MM-DD HH:mm:ss'),
+                end: moment(saved.end).format('YYYY-MM-DD HH:mm:ss'),
+            },
         });
     } catch (error) {
         console.error('[/generate] Error:', error);
@@ -235,7 +241,6 @@ app.get('/url/:url_hash', async (req, res) => {
 
         const link = await db('links')
             .where({ url_hash })
-            .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'min_logout', 'created_at', 'updated_at')
             .first();
 
         if (!link) {
@@ -265,7 +270,15 @@ app.get('/url/:url_hash', async (req, res) => {
             }
         }
 
-        return res.status(200).json({ success: true, data: link });
+        return res.status(200).json({
+            success: true, 
+            data: {
+                ...link,
+                token: link.token === true || link.token === 1 || link.token === '1',
+                start: moment(link.start).format('YYYY-MM-DD HH:mm:ss'),
+                end: moment(link.end).format('YYYY-MM-DD HH:mm:ss'),
+            },
+        });
     } catch (error) {
         console.error('[/url/:url_hash] Error:', error);
         return res.status(500).json({
@@ -285,7 +298,6 @@ app.get('/logout/:url_hash', async (req, res) => {
 
         const link = await db('links')
             .where({ url_hash })
-            .select('id', 'url', 'token', 'kode_acak', 'start', 'end', 'min_logout', 'created_at', 'updated_at')
             .first();
 
         if (!link) {
@@ -312,13 +324,13 @@ app.get('/logout/:url_hash', async (req, res) => {
         }
 
         const minLogoutMs = link.min_logout * 60 * 1000;
-        const earliestLogoutMs = referenceTime.getTime() + minLogoutMs;
-        const earliestLogoutIso = new Date(earliestLogoutMs).toISOString();
+        const earliestLogoutMs = new Date(link.end).getTime() - minLogoutMs;
+        const earliestLogoutIso = moment(earliestLogoutMs).locale('id').format('LLLL')
 
         if (Date.now() < earliestLogoutMs) {
             return res.status(403).json({
                 success: false,
-                message: `Belum waktunya logout. Minimal ${link.min_logout} menit sejak waktu mulai.`,
+                message: `Belum waktunya logout. Minimal ${link.min_logout} menit sebelum waktu berakhir.`,
                 data: { valid: false, earliest_logout: earliestLogoutIso },
             });
         }
