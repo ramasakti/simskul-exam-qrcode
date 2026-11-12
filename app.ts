@@ -8,19 +8,6 @@ import knexConfig from './knexfile.js';
 const db = knex(knexConfig.development);
 
 // ============================================================
-// Helper: Generate random code
-// ============================================================
-function generateRandomCode(length = 6): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    const bytes = crypto.randomBytes(length);
-    let result = '';
-    for (let i = 0; i < length; i++) {
-        result += chars[bytes[i] % chars.length];
-    }
-    return result;
-}
-
-// ============================================================
 // Helper: Hash URL (SHA-256)
 // ============================================================
 function hashUrl(url: string): string {
@@ -68,18 +55,6 @@ function parseTimestamp(value: unknown): Date | null {
 }
 
 // ============================================================
-// Helper: Generate kode_acak unik
-// ============================================================
-async function generateUniqueKodeAcak(): Promise<string> {
-    for (let i = 0; i < 20; i++) {
-        const code = generateRandomCode(6);
-        const found = await db('links').where({ kode_acak: code }).first();
-        if (!found) return code;
-    }
-    throw new Error('Gagal menghasilkan kode_acak unik setelah 20 percobaan.');
-}
-
-// ============================================================
 // Helper: Insert baru dengan retry saat race condition
 // ============================================================
 async function insertNewLink(data: Record<string, unknown>) {
@@ -111,9 +86,10 @@ const app = new Elysia()
         '/generate',
         async ({ body, set }) => {
             try {
-                const { url, token, start, end, min_logout } = body as {
+                const { url, token_masuk, token_keluar, start, end, min_logout } = body as {
                     url?: unknown;
-                    token?: unknown;
+                    token_masuk?: unknown;
+                    token_keluar?: unknown;
                     start?: unknown;
                     end?: unknown;
                     min_logout?: unknown;
@@ -133,24 +109,24 @@ const app = new Elysia()
                     };
                 }
 
-                if (token !== undefined && typeof token !== 'boolean') {
-                    set.status = 400;
-                    return {
-                        success: false,
-                        message: 'Field "token" harus berupa boolean (true/false).',
-                    };
-                }
-
-                if (min_logout !== undefined && min_logout !== null) {
-                    if (
-                        typeof min_logout !== 'number' ||
-                        !Number.isInteger(min_logout) ||
-                        min_logout < 0
-                    ) {
+                for (const [field, value] of [['token_masuk', token_masuk], ['token_keluar', token_keluar]] as const) {
+                    if (value !== undefined && value !== null && typeof value !== 'string') {
                         set.status = 400;
                         return {
                             success: false,
-                            message: 'Field "min_logout" harus berupa angka bulat (menit) >= 0.',
+                            message: `Field "${field}" harus berupa string atau null.`,
+                        };
+                    }
+                }
+
+                let minLogoutDate: Date | null = null;
+                if (min_logout !== undefined && min_logout !== null) {
+                    minLogoutDate = parseTimestamp(min_logout);
+                    if (minLogoutDate === null) {
+                        set.status = 400;
+                        return {
+                            success: false,
+                            message: 'Field "min_logout" tidak valid. Gunakan timestamp atau ISO string.',
                         };
                     }
                 }
@@ -194,15 +170,6 @@ const app = new Elysia()
                     }
                 }
 
-                // ---- Validasi: min_logout wajib punya end ----
-                if (min_logout !== undefined && min_logout !== null && !endDate) {
-                    set.status = 400;
-                    return {
-                        success: false,
-                        message: 'Field "end" wajib diisi jika "min_logout" diisi.',
-                    };
-                }
-
                 // ---- Cek URL existing -> HAPUS data lama ----
                 const urlHash = hashUrl(url);
                 const existing = await db('links').where({ url_hash: urlHash }).first();
@@ -211,17 +178,14 @@ const app = new Elysia()
                     await db('links').where({ id: existing.id }).delete();
                 }
 
-                // ---- Generate kode_acak unik & insert ----
-                const kode_acak = await generateUniqueKodeAcak();
-
                 const saved = await insertNewLink({
                     url,
                     url_hash: urlHash,
-                    token: Boolean(token),
-                    kode_acak,
+                    token_masuk: token_masuk ?? null,
+                    token_keluar: token_keluar ?? null,
                     start: startDate ?? null,
                     end: endDate ?? null,
-                    min_logout: (min_logout as number | undefined) ?? null,
+                    min_logout: minLogoutDate,
                 });
 
                 const replaced = Boolean(existing);
@@ -230,15 +194,13 @@ const app = new Elysia()
                 return {
                     success: true,
                     message: replaced
-                        ? 'Link berhasil dibuat ulang. Data lama dihapus, kode_acak baru diterbitkan.'
+                        ? 'Link berhasil dibuat ulang. Data lama dihapus.'
                         : 'Link berhasil dibuat.',
                     replaced,
                     data: {
                         ...saved,
-                        token:
-                            saved.token === true ||
-                            saved.token === 1 ||
-                            saved.token === '1',
+                        token_masuk: saved.token_masuk,
+                        token_keluar: saved.token_keluar,
                         start: moment(saved.start).format('YYYY-MM-DD HH:mm:ss'),
                         end: moment(saved.end).format('YYYY-MM-DD HH:mm:ss'),
                     },
@@ -277,10 +239,8 @@ const app = new Elysia()
                     };
                 }
 
-                // NOTE: perilaku asli memakai link.end di sini (kemungkinan bug).
-                // Dipertahankan agar identik dengan versi Express.
                 if (link.start) {
-                    const startMs = new Date(link.end).getTime();
+                    const startMs = new Date(link.start).getTime();
                     if (Number.isFinite(startMs) && Date.now() > startMs) {
                         set.status = 410;
                         return { success: false, message: 'Ujian belum dimulai.' };
@@ -300,10 +260,8 @@ const app = new Elysia()
                     success: true,
                     data: {
                         ...link,
-                        token:
-                            link.token === true ||
-                            link.token === 1 ||
-                            link.token === '1',
+                        token_masuk: link.token_masuk,
+                        token_keluar: link.token_keluar,
                         start: moment(link.start).format('YYYY-MM-DD HH:mm:ss'),
                         end: moment(link.end).format('YYYY-MM-DD HH:mm:ss'),
                     },
@@ -349,17 +307,15 @@ const app = new Elysia()
                     };
                 }
 
-                const referenceTime = link.start ? new Date(link.start) : new Date(link.created_at);
-                if (isNaN(referenceTime.getTime())) {
+                const earliestLogoutMs = new Date(link.min_logout).getTime();
+                if (!Number.isFinite(earliestLogoutMs)) {
                     set.status = 500;
                     return {
                         success: false,
-                        message: 'Data waktu referensi tidak valid.',
+                        message: 'Data min_logout tidak valid.',
                     };
                 }
 
-                const minLogoutMs = link.min_logout * 60 * 1000;
-                const earliestLogoutMs = new Date(link.end).getTime() - minLogoutMs;
                 const earliestLogoutIso = moment(earliestLogoutMs)
                     .locale('id')
                     .format('LLLL');
@@ -368,7 +324,7 @@ const app = new Elysia()
                     set.status = 403;
                     return {
                         success: false,
-                        message: `Belum waktunya logout. Minimal ${link.min_logout} menit sebelum waktu berakhir.`,
+                        message: `Belum waktunya logout sampai ${earliestLogoutIso}.`,
                         data: { valid: false, earliest_logout: earliestLogoutIso },
                     };
                 }
