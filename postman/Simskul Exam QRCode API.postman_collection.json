@@ -1,0 +1,94 @@
+{
+  "info": {
+    "_postman_id": "7f4dbfd4-92e4-4d42-9f1f-7d3e8b1f4c11",
+    "name": "Simskul Exam QRCode API",
+    "description": "Collection untuk seluruh endpoint API Simskul Exam QRCode. Jalankan Register lalu Login sebelum endpoint yang membutuhkan token.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:3000" },
+    { "key": "npsn", "value": "20540057" },
+    { "key": "password", "value": "Password123!" },
+    { "key": "auth_token", "value": "" },
+    { "key": "exam_url", "value": "https://example.com/exam" },
+    { "key": "token_masuk", "value": "TOKEN-MASUK-001" },
+    { "key": "token_keluar", "value": "TOKEN-KELUAR-001" },
+    { "key": "start", "value": "" },
+    { "key": "end", "value": "" },
+    { "key": "min_logout", "value": "" },
+    { "key": "url_hash", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"npsn\": \"{{npsn}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{base_url}}/auth/register"
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"npsn\": \"{{npsn}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{base_url}}/auth/login"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const json = pm.response.json();", "pm.collectionVariables.set('auth_token', json.data.token);"] } }]
+        },
+        {
+          "name": "Logout Account",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{auth_token}}" }],
+            "url": "{{base_url}}/auth/logout"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Exam Links",
+      "item": [
+        {
+          "name": "Get My Links",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{auth_token}}" }],
+            "url": "{{base_url}}/links"
+          }
+        },
+        {
+          "name": "Generate Link",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"url\": \"{{exam_url}}\",\n  \"token_masuk\": \"{{token_masuk}}\",\n  \"token_keluar\": \"{{token_keluar}}\",\n  \"start\": {{start}},\n  \"end\": {{end}},\n  \"min_logout\": {{min_logout}}\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{base_url}}/generate"
+          },
+          "event": [{ "listen": "test", "script": { "exec": ["const json = pm.response.json();", "if (json.data && json.data.url_hash) pm.collectionVariables.set('url_hash', json.data.url_hash);"] } }]
+        },
+        {
+          "name": "Get Exam Link",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/url/{{url_hash}}"
+          }
+        },
+        {
+          "name": "Validate Exam Logout",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/logout/{{url_hash}}"
+          }
+        }
+      ]
+    }
+  ]
+}
